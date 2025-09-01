@@ -283,6 +283,9 @@ class Http2Parser {
 
         swallowPayload(streamId, FrameType.HEADERS.getId(), padLength, true, buffer);
 
+        // Validate the headers so far
+        hpackDecoder.getHeaderEmitter().validateHeaders();
+
         if (Flags.isEndOfHeaders(flags)) {
             onHeadersComplete(streamId);
         } else {
@@ -446,6 +449,9 @@ class Http2Parser {
 
         readHeaderPayload(streamId, payloadSize, buffer);
 
+        // Validate the headers so far
+        hpackDecoder.getHeaderEmitter().validateHeaders();
+
         if (endOfHeaders) {
             headersCurrentStream = -1;
             onHeadersComplete(streamId);
@@ -471,15 +477,25 @@ class Http2Parser {
 
         ByteArrayInputStream bais = new ByteArrayInputStream(payload, 4, payloadSize - 4);
         Reader r = new BufferedReader(new InputStreamReader(bais, StandardCharsets.US_ASCII));
-        Priority p = Priority.parsePriority(r);
 
-        if (log.isDebugEnabled()) {
-            log.debug(sm.getString("http2Parser.processFramePriorityUpdate.debug", connectionId,
-                    Integer.toString(prioritizedStreamID), Integer.toString(p.getUrgency()),
-                    Boolean.valueOf(p.getIncremental())));
+        try {
+            Priority p = Priority.parsePriority(r);
+ 
+            if (log.isTraceEnabled()) {
+                log.trace(sm.getString("http2Parser.processFramePriorityUpdate.debug", connectionId,
+                        Integer.toString(prioritizedStreamID), Integer.toString(p.getUrgency()),
+                        Boolean.valueOf(p.getIncremental())));
+            }
+
+            output.priorityUpdate(prioritizedStreamID, p);
+        } catch (IllegalArgumentException iae) {
+            // Priority frames with invalid priority field values should be ignored
+            if (log.isTraceEnabled()) {
+                log.trace(sm.getString("http2Parser.processFramePriorityUpdate.invalid", connectionId,
+                        Integer.toString(prioritizedStreamID)), iae);
+            }
         }
 
-        output.priorityUpdate(prioritizedStreamID, p);
     }
 
 
@@ -636,11 +652,6 @@ class Http2Parser {
             throw new ConnectionException(sm.getString("http2Parser.processFrameHeaders.decodingDataLeft"),
                     Http2Error.COMPRESSION_ERROR);
         }
-
-        // Delay validation (and triggering any exception) until this point
-        // since all the headers still have to be read if a StreamException is
-        // going to be thrown.
-        hpackDecoder.getHeaderEmitter().validateHeaders();
 
         synchronized (output) {
             output.headersEnd(streamId, headersEndStream);
